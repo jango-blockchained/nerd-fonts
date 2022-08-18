@@ -5,6 +5,16 @@
 # used for debugging
 # set -x
 
+# The optional first argument to this script is a filter for the fonts to patch.
+# All font files that start with that filter (and are ttf or otf files) will
+# be processed only.
+#   Example ./gotta-patch-em-all-font-patcher\!.sh "iosevka"
+#   Process all font files that start with "iosevka"
+# If the argument starts with a '/' all font files in a directory that matches
+# the filter are processed only.
+#   Example ./gotta-patch-em-all-font-patcher\!.sh "/iosevka"
+#   Process all font files that are in directories that start with "iosevka"
+
 # for executing script to rebuild JUST the readmes:
 # ./gotta-patch-em-all-font-patcher\!.sh "" info
 # to test this script with a single font (pattern):
@@ -27,6 +37,7 @@ res1=$(date +%s)
 parent_dir="${sd}/../../"
 # Set source and target directories
 source_fonts_dir="${sd}/../../src/unpatched-fonts"
+like_mode=''
 like_pattern=''
 complete_variations_per_family=4
 font_typefaces_count=0
@@ -40,9 +51,17 @@ patched_parent_dir="patched-fonts"
 max_parallel_process=64
 
 if [ $# -eq 1 ] || [ "$1" != "" ]
+then
+  if [[ "${1:0:1}" == "/" ]]
   then
-    like_pattern=$1
-    echo "$LINE_PREFIX Parameter given, limiting search and patch to pattern '$like_pattern' given"
+    like_mode="-ipath"
+    like_pattern="*$1*/*.[o,t]tf"
+    echo "$LINE_PREFIX Parameter given, limiting search and patch to pathname pattern '$1' given"
+  else
+    like_mode="-iname"
+    like_pattern="$1*.[o,t]tf"
+    echo "$LINE_PREFIX Parameter given, limiting search and patch to filename pattern '$1' given"
+  fi
 fi
 
 # simple second param option to allow to regenerate font info without re-patching
@@ -57,7 +76,7 @@ fi
 source_fonts=()
 while IFS= read -d $'\0' -r file ; do
   source_fonts=("${source_fonts[@]}" "$file")
-done < <(find "$source_fonts_dir" -iname "$like_pattern*.[o,t]tf" -type f -print0)
+done < <(find "$source_fonts_dir" ${like_mode} ${like_pattern} -type f -print0)
 
 # print total number of source fonts found
 echo "$LINE_PREFIX Total source fonts found: ${#source_fonts[*]}"
@@ -65,12 +84,18 @@ echo "$LINE_PREFIX Total source fonts found: ${#source_fonts[*]}"
 function patch_font {
   local f=$1; shift
   local i=$1; shift
+  local purge=$1; shift
   # take everything before the last slash (/) to start building the full path
   local patched_font_dir="${f%/*}/"
   # find replace unpatched parent dir with patched parent dir:
   local patched_font_dir="${patched_font_dir/$unpatched_parent_dir/$patched_parent_dir}"
 
   [[ -d "$patched_font_dir" ]] || mkdir -p "$patched_font_dir"
+  if [ -n ${purge} -a -d "${patched_font_dir}complete" ]
+  then
+    echo "Purging patched font dir ${patched_font_dir}complete"
+    rm ${patched_font_dir}complete/*.[to]tf
+  fi
 
   config_parent_dir=$( cd "$( dirname "$f" )" && cd ".." && pwd)
   config_dir=$( cd "$( dirname "$f" )" && pwd)
@@ -261,7 +286,24 @@ then
   # Iterate through source fonts
   for i in "${!source_fonts[@]}"
   do
-    patch_font "${source_fonts[$i]}" "$i" 2>/dev/null &
+    purge_destination=""
+    current_source_dir=$(dirname ${source_fonts[$i]})
+    if [ "${current_source_dir}" != "${last_source_dir}" ]
+    then
+      # If we are going to patch ALL font files from a certain source directory
+      # the destination directory is purged (all font files therein deleted)
+      # to follow font naming changed. We can not do this if we patch only
+      # some of the source font files in that directory.
+      last_source_dir=${current_source_dir}
+      num_to_patch=$(find "${current_source_dir}" ${like_mode} ${like_pattern} -type f | wc -l)
+      num_existing=$(find "${current_source_dir}" -iname "*.[o,t]tf" -type f | wc -l)
+      if [ ${num_to_patch} -eq ${num_existing} ]
+      then
+        purge_destination="TRUE"
+      fi
+    fi
+    patch_font "${source_fonts[$i]}" "$i" "$purge_destination" 2>/dev/null
+
 
     # un-comment to test this script (patch 1 font)
     #break
@@ -311,3 +353,8 @@ printf "# The total number of font families patched was \\t\\t'%s'\\n" "$font_fa
 printf "# The total number of 'complete' patched fonts created was \\t'%s'\\n" "$complete_variation_count"
 printf "# The total number of 'variation' patched fonts created was \\t'%s'\\n" "$total_variation_count"
 printf "# The total number of patched fonts created was \\t\\t'%s'\\n" "$total_count"
+
+if [ "$total_count" -lt 1 ]; then
+  # Probably unwanted... alert user
+  exit 1
+fi
